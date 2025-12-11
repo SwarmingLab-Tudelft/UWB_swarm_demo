@@ -5,4 +5,4 @@ absolute_boundaries = {
     "y": (-1.0, 1.0),
     "z": (0.0, 2.0)
 }
-drone_spacing = 0.5  # meters
+drone_spacing = 0.2  # meters

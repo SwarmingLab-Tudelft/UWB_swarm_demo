@@ -168,6 +168,16 @@ class ControlTowerGUI:
         btn_emergency = tkinter.Button(self.content, text="Emergency land", bg="red", fg="white",
                                        command=self.swarm.emergency_land, width=btn_width)
         btn_emergency.grid(column=2, row=rows_used, sticky="ew", padx=padx, pady=pady)
+        ## Formations buttons
+        btn_flat_square = tkinter.Button(self.content, text="Flat Square", bg="orange", fg="white",
+                                       command=self.swarm.flat_square, width=btn_width)
+        btn_flat_square.grid(column=0, row=rows_used+1, sticky="ew", padx=padx, pady=pady)
+        btn_circle = tkinter.Button(self.content, text="Circle", bg="orange", fg="white",
+                                       command=self.swarm.circle, width=btn_width)  
+        btn_circle.grid(column=1, row=rows_used+1, sticky="ew", padx=padx, pady=pady)
+        btn_tilted_plane = tkinter.Button(self.content, text="Tilted Plane", bg="orange", fg="white",
+                                       command=self.swarm.tilted_plane, width=btn_width)
+        btn_tilted_plane.grid(column=2, row=rows_used+1, sticky="ew", padx=padx, pady=pady)
 
     ## Safe shutdown on window close
     def _configure_close_action(self):

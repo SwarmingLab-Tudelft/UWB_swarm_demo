@@ -236,6 +236,15 @@ class CrazyflieSwarm:
         print("[INFO] Swarm background stopped and logging disabled")
 
     ## ---------------------------
+    # FORMATION COMMANDS
+    ## ---------------------------
+    def flat_square(self):
+        print("[FORMATION] Issuing Flat Square formation")
+    def circle(self):
+        print("[FORMATION] Circle command issued")
+    def tilted_plane(self):
+        print("[FORMATION] Tilted Plane command issued")
+    ## ---------------------------
     # MAIN UPDATE LOOP
     ## ---------------------------
     def run(self, update_hz=50):
