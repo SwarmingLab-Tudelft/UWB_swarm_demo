@@ -115,7 +115,7 @@ class FormationManager:
     def __init__(self, uris):
         self.uris = uris
         # Additional formation parameters can be initialized here
-        self.states = {uri : "disconnected" for uri in uris}  # Example state tracking
+        self.states = {uri : "disconnected" for uri in uris}
         self.n_connected_drones = 0
 
     def connect_to_formation(self, uri):

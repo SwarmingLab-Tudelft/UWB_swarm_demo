@@ -23,7 +23,7 @@ class CrazyflieSwarm:
         self.battery_cache = {uri: 3.0 for uri in uris}
         # options are: idle, connecting, connected, disconnected, flying, hovering, landing, and error
         self.state_cache = {uri: "disconnected" for uri in uris}
-        self._last_cache_update_time = 0
+        self._last_state_update_time = {uri: time.time() for uri in uris}
         ## Logging
         self._log_configs = {}
         ## Formation parameters
@@ -34,18 +34,22 @@ class CrazyflieSwarm:
     # CONNECT ALL DRONES
     # ---------------------------
     def _setup_logging(self, uri, scf):
-        """Create Crazyflie log block for battery voltage."""
+        """Create Crazyflie log block."""
         cf = scf.cf
 
         log = LogConfig(name=f'bat_{uri}', period_in_ms=data_update_interval*1000)
         log.add_variable('pm.vbat', 'float') # Voltage
         log.add_variable('supervisor.info', 'uint16_t') # State
+
+        # Callbacks
         def _supervisor_cb(data):
             info = data.get('supervisor.info')  # raw uint16
+            state = self.get_drone_state(uri)  # default state
             if info is None:
-                state = "disconnected"
+                pass
             else:
-            # decode bits
+                # decode bits
+                self._last_state_update_time[uri] = time.time()
                 states = {
                     'can_be_armed': bool(info & (1 << 0)),
                     'is_armed': bool(info & (1 << 1)),
@@ -65,6 +69,8 @@ class CrazyflieSwarm:
                     state = "idle"
                 elif states['is_crashed'] or states['is_tumbled']:
                     state = "crashed"
+                else:
+                    state = "connected"  # connected but not flying/can_fly/crashed
             with self.lock:
                 self.state_cache[uri] = state
 
@@ -74,7 +80,6 @@ class CrazyflieSwarm:
                 return 3.0
             with self.lock:
                 self.battery_cache[uri] = voltage
-        # Callbacks
         def _callback(ts, data, logconf):
             _supervisor_cb(data)
             _battery_cb(data)           
@@ -105,7 +110,7 @@ class CrazyflieSwarm:
             print(f"[OK] Connected to {uri}")
         except Exception as e:
             with self.lock:
-                self.scfs[uri] = False
+                self.scfs[uri] = None
             print(f"[ERROR] Could not connect to {uri}: {e}")
 
     def connect_all(self):
@@ -149,7 +154,7 @@ class CrazyflieSwarm:
 
     def takeoff(self, height=0.8, duration=3.0):
         for uri, scf in self.scfs.items():
-            if scf is False or scf is None:
+            if scf is None:
                 continue
             threading.Thread(target=self.takeoff_one, args=(uri, scf, height, duration)).start()
 
@@ -168,7 +173,7 @@ class CrazyflieSwarm:
 
     def land(self, duration=3.0):
         for uri, scf in self.scfs.items():
-            if scf is False or scf is None:
+            if scf is None:
                 continue
             threading.Thread(target=self.land_one, args=(uri, scf, duration)).start()
 
@@ -176,7 +181,7 @@ class CrazyflieSwarm:
     # EMERGENCY LAND (MOTOR KILL)
     # ---------------------------
     def emergency_one(self, uri, scf):
-        if scf is False or scf is None:
+        if scf is None:
             return
         try:
             print(f"[EMERGENCY] Stopping motors for {uri}")
@@ -258,4 +263,13 @@ class CrazyflieSwarm:
         # Periodic data update
         while self.running:
             # Future swarm coordination logic can be added here with the formation manager
+            for uri in self.uris:
+                # Check for stale state info
+                current_time = time.time()
+                if current_time - self._last_state_update_time[uri] > 3 * data_update_interval:
+                    with self.lock:
+                        self.state_cache[uri] = "disconnected"
+                        self.scfs[uri] = None
+                        self.formations.disconnect_from_formation(uri)
+                        self.battery_cache[uri] = 3.0  # reset battery
             time.sleep(0.1)  # avoid busy-waiting
