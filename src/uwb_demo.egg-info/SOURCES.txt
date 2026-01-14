@@ -1,7 +1,0 @@
-README.md
-pyproject.toml
-uwb_demo.egg-info/PKG-INFO
-uwb_demo.egg-info/SOURCES.txt
-uwb_demo.egg-info/dependency_links.txt
-uwb_demo.egg-info/requires.txt
-uwb_demo.egg-info/top_level.txt

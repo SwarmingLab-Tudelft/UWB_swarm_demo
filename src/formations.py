@@ -123,7 +123,7 @@ class FormationCalculator:
         return False        
 
     def flat_square(self, drones: dict[str, str]): #{uris: states}
-        available = [uri for uri, state in drones.items() if state == "charging" or state == "connected" or state == "idle" or state == "flying"]
+        available = [uri for uri, state in drones.items() if state ==  "in_formation"]
         n_drones = len(available)
         positions = dict()
         n_side = math.ceil(math.sqrt(n_drones))
@@ -155,7 +155,7 @@ class FormationCalculator:
     
     def circle(self, drones: dict[str, str]):
         radius = min((self.boundaries["x"][1] - self.boundaries["x"][0]), (self.boundaries["y"][1] - self.boundaries["y"][0])) / 2 - self.min_spacing * 2
-        available = [uri for uri, state in drones.items() if state == "charging" or state == "connected" or state == "idle" or state == "flying"]
+        available = [uri for uri, state in drones.items() if state ==  "in_formation"]
         n_drones = len(available)
         positions = dict()
         angle_increment = 2 * math.pi / n_drones

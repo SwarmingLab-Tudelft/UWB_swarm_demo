@@ -1,4 +1,5 @@
 from logging import info
+import logging
 import threading
 import time
 
@@ -8,6 +9,9 @@ from cflib.crazyflie import Crazyflie
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 from cflib.crazyflie.log import LogConfig
 
+# Suppress verbose cflib logging (link errors, packet loss messages)
+logging.getLogger('cflib').setLevel(logging.ERROR)
+
 data_update_interval = 1.0  # seconds
 
 class CrazyflieSwarm:
@@ -15,7 +19,7 @@ class CrazyflieSwarm:
     def __init__(self, uris):
         self.uris = uris
         self.scfs = {}     # {uri: SyncCrazyflie}
-        self.threads = {}  # {uri: Thread}
+        self.link_threads = {}  # {uri: Thread}
         ## When modifying a dict, a lock is needed. It works like a mutex
         self.lock = threading.Lock()
         self.running = False
@@ -24,11 +28,11 @@ class CrazyflieSwarm:
         # options are: idle, connecting, connected, disconnected, flying, hovering, landing, and error
         self.state_cache = {uri: "disconnected" for uri in uris}
         self._last_state_update_time = {uri: time.time() for uri in uris}
+        self.current_positions = dict() # {uri: (x, y, z)}
         ## Logging
         self._log_configs = {}
         ## Formation parameters
         self.formations = FormationManager(uris)
-        self.formation_positions = None
 
 
     # ---------------------------
@@ -38,9 +42,14 @@ class CrazyflieSwarm:
         """Create Crazyflie log block."""
         cf = scf.cf
 
-        log = LogConfig(name=f'bat_{uri}', period_in_ms=data_update_interval*1000)
-        log.add_variable('pm.vbat', 'float') # Voltage
-        log.add_variable('supervisor.info', 'uint16_t') # State
+        log_low_freq = LogConfig(name=f'bat_{uri}', period_in_ms=data_update_interval*1000)
+        log_low_freq.add_variable('pm.vbat', 'float') # Voltage
+        log_low_freq.add_variable('supervisor.info', 'uint16_t') # State
+
+        log_high_freq = LogConfig(name=f'pos_{uri}', period_in_ms=250)
+        log_high_freq.add_variable('kalman.stateX', 'float')  # X position
+        log_high_freq.add_variable('kalman.stateY', 'float')  # Y position
+        log_high_freq.add_variable('kalman.stateZ', 'float')  # Altitude
 
         # Callbacks
         def _supervisor_cb(data):
@@ -81,16 +90,33 @@ class CrazyflieSwarm:
                 return 3.0
             with self.lock:
                 self.battery_cache[uri] = voltage
-        def _callback(ts, data, logconf):
+
+        def _position_cb(data):
+            x = data.get('kalman.stateX')
+            y = data.get('kalman.stateY')
+            z = data.get('kalman.stateZ')
+            if x is None or y is None or z is None:
+                return
+            self.current_positions[uri] = (x, y, z)
+
+        def _low_freq_callback(ts, data, logconf):
             _supervisor_cb(data)
-            _battery_cb(data)           
+            _battery_cb(data)
+
+        def _high_freq_callback(ts, data, logconf):
+            _position_cb(data)     
 
         try:
-            cf.log.add_config(log)
-            log.data_received_cb.add_callback(_callback)
-            log.start()
-            self._log_configs[uri] = log
-            print(f"[OK] Battery logging started for {uri}")
+            # Low freq log
+            cf.log.add_config(log_low_freq)
+            log_low_freq.data_received_cb.add_callback(_low_freq_callback)
+            log_low_freq.start()
+            # High freq log
+            cf.log.add_config(log_high_freq)
+            log_high_freq.data_received_cb.add_callback(_high_freq_callback)
+            log_high_freq.start()
+            self._log_configs[uri] = (log_low_freq, log_high_freq)
+            print(f"[OK] Logging started for {uri}")
         except Exception as e:
             print(f"[ERROR] Failed to start logging for {uri}: {e}")
 
@@ -101,9 +127,6 @@ class CrazyflieSwarm:
 
             with self.lock:
                 self.scfs[uri] = scf
-
-            # Formation manager
-            self.formations.connect_to_formation(uri)
 
             # Start telemetry
             self._setup_logging(uri, scf)
@@ -117,10 +140,10 @@ class CrazyflieSwarm:
         for uri in self.uris:
             t = threading.Thread(target=self.connect_one, args=(uri,))
             t.start()
-            self.threads[uri] = t
+            self.link_threads[uri] = t
 
         # Wait for all connections
-        for t in self.threads.values():
+        for t in self.link_threads.values():
             t.join()
     def close_links(self):
         for uri, scf in self.scfs.items():
@@ -134,11 +157,9 @@ class CrazyflieSwarm:
     # GET DRONE STATES
     # ---------------------------
     def get_drone_state(self, uri):
-        # Placeholder for actual state retrieval logic
         return self.state_cache.get(uri, "disconnected")
     
     def get_drone_battery(self, uri):
-        # Placeholder for actual battery retrieval logic
         return self.battery_cache.get(uri, 3.0)
 
     # ---------------------------
@@ -148,15 +169,18 @@ class CrazyflieSwarm:
         try:
             if self.get_drone_battery(uri) < 3.7:
                 print(f"[WARNING] Battery too low for takeoff: {uri}")
-                self.formations.disconnect_from_formation(uri)
+                return
+            if self.get_drone_state(uri) == "flying":
+                print(f"[INFO] Drone already flying: {uri}")
                 return
             hlc = scf.cf.high_level_commander
             hlc.takeoff(height, duration)
+            self.formations.connect_to_formation(uri)
             print(f"[TAKEOFF] {uri}")
         except Exception as e:
             print(f"[ERROR] Takeoff failed for {uri}: {e}")
 
-    def takeoff(self, height=0.8, duration=3.0):
+    def takeoff(self, height=0.8, duration=1.0):
         for uri, scf in self.scfs.items():
             if scf is None:
                 continue
@@ -165,7 +189,6 @@ class CrazyflieSwarm:
     # ---------------------------
     # LAND
     # ---------------------------
-    # If it's already landed, dont do that again
     def land_one(self, uri, scf, duration):
         try:
             if self.get_drone_state(uri) == "flying":
@@ -204,7 +227,6 @@ class CrazyflieSwarm:
     def stop_background(self, timeout=2.0):
         """Stop update loop, stop and remove any active LogConfig callbacks and join threads.
         This will stop logging callbacks from running.
-        I did not write this code, but it works.
         """
         # stop main update loop
         self.running = False
@@ -236,7 +258,7 @@ class CrazyflieSwarm:
             self._log_configs.clear()
 
         # join any connection threads
-        for uri, t in list(self.threads.items()):
+        for uri, t in list(self.link_threads.items()):
             try:
                 if t is not None and t.is_alive():
                     t.join(timeout if timeout is not None else 0.1)
@@ -244,25 +266,32 @@ class CrazyflieSwarm:
                 pass
 
         print("[INFO] Swarm background stopped and logging disabled")
+    
+    def forced_stop_flying(self):
+        """Lands all drones that are currently flying, then issues emergency stop if they have not landed."""
+        self.land(duration=2.5)
+        time.sleep(3.0)  # wait a moment before emergency stop
+        if any(self.scfs.state_cache[uri] == "flying" for uri in self.uris):
+            self.emergency_land()
 
     ## ---------------------------
     # FORMATION COMMANDS
     ## ---------------------------
-    def send_formation(self, positions, duration=4.0):
+    def send_formation(self, target_formation, duration=4.0):
         """Sends position commands to all drones to move to the specified positions over the given duration."""
-        if self.formation_positions is not None:
+        if self.current_positions is not None:
             # Check for potential collisions
-            if self.formations.positions_intersect(self.formation_positions, positions, threshold=0.3):
-                transition_positions = self.formations.get_transition_positions(self.formation_positions, positions)
+            if self.formations.positions_intersect(self.current_positions, target_formation, threshold=0.3):
+                transition_positions = self.formations.get_transition_positions(self.current_positions, target_formation, threshold=0.3)
             else:
-                transition_positions = [positions]
+                transition_positions = [target_formation]
         else:
-            transition_positions = [positions]
-        for transition_pos in transition_positions:
+            transition_positions = [target_formation]
+        for transition_step in transition_positions:
             for uri, scf in self.scfs.items():
-                if scf is None or uri not in transition_pos:
+                if scf is None or uri not in transition_step:
                     continue
-                x, y, z = transition_pos[uri]
+                x, y, z = transition_step[uri]
                 try:
                     hlc = scf.cf.high_level_commander
                     hlc.go_to(x, y, z, 0.0, duration)
@@ -271,20 +300,19 @@ class CrazyflieSwarm:
                     print(f"[ERROR] Formation command failed for {uri}: {e}")
             # Wait for this transition to complete before moving to the next one
             time.sleep(duration)
-        self.formation_positions = positions
 
     def flat_square(self):
         print("[FORMATION] Issuing Flat Square formation")
-        positions = self.formations.get_formation_positions("flat_square")
-        self.send_formation(positions)
+        new_formation = self.formations.get_formation_positions("flat_square")
+        self.send_formation(new_formation)
     def circle(self):
         print("[FORMATION] Circle command issued")
-        positions = self.formations.get_formation_positions("circle")
-        self.send_formation(positions)
+        new_formation = self.formations.get_formation_positions("circle")
+        self.send_formation(new_formation)
     def tilted_plane(self):
         print("[FORMATION] Tilted Plane command issued")
-        positions = self.formations.get_formation_positions("tilted_plane")
-        self.send_formation(positions)
+        new_formation = self.formations.get_formation_positions("tilted_plane")
+        self.send_formation(new_formation)
     ## ---------------------------
     # MAIN UPDATE LOOP
     ## ---------------------------
@@ -312,6 +340,7 @@ class CrazyflieSwarm:
                             self.formations.disconnect_from_formation(uri)
                             self.battery_cache[uri] = 3.0 
                     if state == "flying" and self.battery_cache[uri] < 3.3 and self.formations.states[uri] == "in_formation":
+                        print(f"[WARNING] Low battery detected during flight for {uri}. Initiating landing.")
                         self.land_one(uri, self.scfs[uri], duration=3.0)
                 else: # Disconnected drone, attempt reconnection periodically
                     if time.time() - last_connection_check > connection_check_interval:

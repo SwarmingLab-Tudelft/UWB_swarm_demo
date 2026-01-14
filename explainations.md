@@ -26,16 +26,11 @@ We looked into it, and there is no simple cf.read_battery() function, so this is
 
 ## In the future
 Things to be implemented are:
-- Better closing routine, give the opportunity to land.
-- Improve take-off for more strenght
-- Implement formation class and functions
-- The main swarm loop, instead of waiting
-- Adding the buttons for the formations on the GUI
-- Retry the connection after when it's not succesful with certain freq (eg 10s)
-- Log the state of the battery, and land automatically when it's too low.
-- Per drone button commands
 - Dynamic formations
 - Check for position convergence before taking off
+- Additions and removals to formations during flight
+- Takeoff and landing in known positions
+- Drones should only be added to the formation when flying
 
 In the firmware:
 - Land when losing connection
@@ -45,3 +40,13 @@ Testing:
 - Flight time
 - Number of drones max
 - Unit tests for FormationManager
+
+Code improvements:
+- Add easier radio editing
+- Move all magic numbers to config.py
+- Naming is confusing for formation manager, becasue there are 2 "states"
+- Code needs a lot of inprovement in comments, docstrings, variable names, and factorisation
+
+Known bugs:
+- When doing an emergency landing, the drone needs to be restarted, becasue the connection is "blocked"
+- Circle formation gives an error when no drones are in formation because it divides by 0

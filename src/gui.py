@@ -4,12 +4,14 @@ import tkinter.ttk as ttk
 import threading
 
 class Crazyflie_report(ttk.Frame):
-    def __init__(self, parent, uri, ident=None):
+    def __init__(self, parent, uri, swarm, ident=None):
         ttk.Frame.__init__(self, parent)
 
         # space among elements
         self['padding'] = 10
 
+        self.uri = uri
+        self.swarm = swarm
         num = uri[-2:]
 
         self._name = Label(self, text="Crazyflie #{}".format(num))
@@ -19,7 +21,7 @@ class Crazyflie_report(ttk.Frame):
         self._uri_label = Label(self, text=uri, fg='grey', font=("ubuntu", 9))
         self._uri_label.grid(row=1, column=0)
 
-        self._status = Label(self, text="idle", fg='grey', font=("ubuntu", 33), width=10)
+        self._status = Label(self, text="idle", fg='grey', font=("ubuntu", 33), width=13)
         self._status.grid(row=2, column=0)
 
         self._battery_label = Label(self, text="Battery:")
@@ -36,21 +38,33 @@ class Crazyflie_report(ttk.Frame):
         self._battery_bar['value'] = 50
         self._battery_bar.grid(row=0, column=1, sticky="ew")
 
-        self._time_frame = ttk.Frame(self)
-        self._time_frame.grid(row=5, column=0)
+        # Individual drone control buttons
+        self._buttons_frame = ttk.Frame(self)
+        self._buttons_frame.grid(row=5, column=0, sticky="ew", pady=(5, 0))
+        self._buttons_frame.columnconfigure(0, weight=1)
+        self._buttons_frame.columnconfigure(1, weight=1)
 
-        up_time = Label(self._time_frame, text="Up time: ", fg="grey", font=("ubuntu", 20))
-        up_time.grid(row=0, column=0)
+        self._takeoff_btn = tkinter.Button(self._buttons_frame, text="Takeoff One", bg="#90EE90", fg="black",
+                                          command=self._on_takeoff)
+        self._takeoff_btn.grid(row=0, column=0, sticky="ew", padx=(0, 2))
 
-        self._up_time_label = Label(self._time_frame, text="0:00:00", font=("ubuntu", 20))
-        self._up_time_label.grid(row=0, column=1)
+        self._land_btn = tkinter.Button(self._buttons_frame, text="Land One", bg="#87CEEB", fg="black",
+                                       command=self._on_land)
+        self._land_btn.grid(row=0, column=1, sticky="ew", padx=(2, 0))
 
-        flight_time = Label(self._time_frame, text="Flight time: ", fg="grey", font=("ubuntu", 20))
-        flight_time.grid(row=1, column=0)
+    def _on_takeoff(self):
+        """Callback for individual takeoff button"""
+        scf = self.swarm.scfs.get(self.uri)
+        if scf is not None:
+            import threading
+            threading.Thread(target=self.swarm.takeoff_one, args=(self.uri, scf, 0.8, 1.0)).start()
 
-        self._flight_time_label = Label(self._time_frame, text="0:00:00", font=("ubuntu", 20))
-        self._flight_time_label.grid(row=1, column=1)
-
+    def _on_land(self):
+        """Callback for individual land button"""
+        scf = self.swarm.scfs.get(self.uri)
+        if scf is not None:
+            import threading
+            threading.Thread(target=self.swarm.land_one, args=(self.uri, scf, 3.0)).start()
 
     
     def set_state(self, state):
@@ -135,7 +149,7 @@ class ControlTowerGUI:
             r = i // 3
             c = i % 3
 
-            cf_widget = Crazyflie_report(self.content, uri, i)
+            cf_widget = Crazyflie_report(self.content, uri, self.swarm, i)
             cf_widget.grid(column=c, row=r)
             self.cfs[uri] = cf_widget
 
@@ -183,6 +197,7 @@ class ControlTowerGUI:
     def _configure_close_action(self):
         """Ensure safe shutdown of threads, drones, etc."""
         def fail_safe():
+           
             # After GUI destroyed, stop swarm background threads but keep links open
             try:
                 self.swarm.stop_background(timeout=5.0)
@@ -190,7 +205,7 @@ class ControlTowerGUI:
                 pass
             # Add motor kill or landing
             try:
-                self.swarm.emergency_land()
+                self.swarm.force_stop_flying()
             except Exception:
                 pass
             # Close links and clean up remaining resources
