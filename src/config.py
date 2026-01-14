@@ -1,4 +1,5 @@
-uris = ['radio://0/100/2M/247E000001']
+uris = ['radio://0/100/2M/247E000001', 
+        'radio://0/100/2M/247E000002']
 
 absolute_boundaries = {
     "x": (-1.0, 1.0),

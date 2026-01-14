@@ -5,6 +5,7 @@ Summary: Control tower GUI for Crazyflie swarm flights.
 Requires-Python: >=3.10
 Description-Content-Type: text/markdown
 Requires-Dist: cflib>=0.1.19
+Requires-Dist: matplotlib>=3.10.8
 
 # UWB Demo (uv-managed)
 

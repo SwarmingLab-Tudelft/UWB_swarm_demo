@@ -33,6 +33,95 @@ class FormationCalculator:
 
         plt.show()
 
+    def _distance_between_lines(self, p1: tuple[float, float, float], p2: tuple[float, float, float], 
+                                        p3: tuple[float, float, float], p4: tuple[float, float, float]) -> float:
+        """
+        Calculate the minimum distance between two 3D line segments.
+        
+        Line segment 1: from p1 to p2
+        Line segment 2: from p3 to p4
+        """
+        def vector_subtract(a, b):
+            return tuple(a[i] - b[i] for i in range(3))
+        
+        def vector_dot(a, b):
+            return sum(a[i] * b[i] for i in range(3))
+        
+        def vector_length(v):
+            return math.sqrt(sum(x**2 for x in v))
+        
+        # Direction vectors
+        d1 = vector_subtract(p2, p1)  # Direction of line 1
+        d2 = vector_subtract(p4, p3)  # Direction of line 2
+        w0 = vector_subtract(p1, p3)  # Vector from p3 to p1
+        
+        a = vector_dot(d1, d1)  # |d1|²
+        b = vector_dot(d1, d2)
+        c = vector_dot(d2, d2)  # |d2|²
+        d = vector_dot(d1, w0)
+        e = vector_dot(d2, w0)
+        
+        denom = a * c - b * b
+        
+        # Handle parallel or nearly parallel lines
+        if abs(denom) < 1e-10:
+            # Lines are parallel, find closest point on line 1 to line 2
+            t = 0
+            if a > 1e-10:
+                t = max(0, min(1, d / a))
+            closest_p1 = tuple(p1[i] + t * d1[i] for i in range(3))
+            
+            # Find closest point on line 2 to this point
+            s = 0
+            if c > 1e-10:
+                s_param = vector_dot(d2, vector_subtract(closest_p1, p3)) / c
+                s = max(0, min(1, s_param))
+            closest_p2 = tuple(p3[i] + s * d2[i] for i in range(3))
+        else:
+            # Find parameters for closest points
+            t = max(0, min(1, (b * e - c * d) / denom))
+            s = max(0, min(1, (a * e - b * d) / denom))
+            
+            # Calculate closest points
+            closest_p1 = tuple(p1[i] + t * d1[i] for i in range(3))
+            closest_p2 = tuple(p3[i] + s * d2[i] for i in range(3))
+        
+        # Return distance between closest points
+        diff = vector_subtract(closest_p1, closest_p2)
+        return vector_length(diff)
+
+    def positions_intersect(self, pos_set1: dict[str, tuple[float, float, float]], pos_set2: dict[str, tuple[float, float, float]], threshold=0.1):
+        """
+        Check if trajectories from start to end positions intersect.
+        True if any two trajectories are closer than the threshold, False otherwise
+        """
+        if len(pos_set1) != len(pos_set2):
+            raise ValueError("Start and end position sets must have the same number of drones.")
+        
+        drones = list(pos_set1.keys())
+        n_drones = len(drones)
+        
+        # Check all pairs of drone trajectories
+        for i in range(n_drones):
+            for j in range(i + 1, n_drones):
+                drone_i = drones[i]
+                drone_j = drones[j]
+                
+                # Get start and end points for each drone
+                p1_start = pos_set1[drone_i]
+                p1_end = pos_set2[drone_i]
+                p2_start = pos_set1[drone_j]
+                p2_end = pos_set2[drone_j]
+                
+                # Calculate minimum distance between the two line segments
+                min_distance = self._distance_between_lines(p1_start, p1_end, p2_start, p2_end)
+                
+                # If distance is below threshold, trajectories intersect/collide
+                if min_distance < threshold:
+                    return True
+        
+        return False        
+
     def flat_square(self, drones: dict[str, str]): #{uris: states}
         available = [uri for uri, state in drones.items() if state == "charging" or state == "connected" or state == "idle" or state == "flying"]
         n_drones = len(available)
@@ -120,7 +209,7 @@ class FormationManager:
 
     def connect_to_formation(self, uri):
         if uri in self.uris:
-            self.states[uri] = "connected"
+            self.states[uri] = "in_formation"
             self.n_connected_drones += 1
             print(f"Drone {uri} connected to formation.")
         else:
@@ -134,8 +223,19 @@ class FormationManager:
         else:
             print(f"Drone {uri} not recognized or already disconnected.")
 
-    def get_formation_positions(self):
-        formation = FormationCalculator("flat_square")
-        connected_uris = [u for u, s in self.states.items() if s != "disconnected"]
-        positions = formation.flat_square(len(connected_uris))
-        return dict(zip(connected_uris, positions))
+    def get_formation_positions(self, formation_type):
+        if formation_type == "flat_square":
+            positions = FormationCalculator().flat_square(self.states)
+        elif formation_type == "tilted_plane":
+            positions = FormationCalculator().tilted_plane(self.states)
+        elif formation_type == "circle":
+            positions = FormationCalculator().circle(self.states)
+        else:
+            raise ValueError("Unknown formation type.")
+        return positions
+    
+    def positions_intersect(self, start_positions, end_positions, threshold=0.1):
+        return FormationCalculator().positions_intersect(start_positions, end_positions, threshold)
+
+    def get_transition_positions(self, start_positions, end_positions):
+        return FormationCalculator().transition_positions(start_positions, end_positions)

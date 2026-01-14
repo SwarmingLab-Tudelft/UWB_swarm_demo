@@ -1,1 +1,2 @@
 cflib>=0.1.19
+matplotlib>=3.10.8

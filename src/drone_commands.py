@@ -20,7 +20,7 @@ class CrazyflieSwarm:
         self.lock = threading.Lock()
         self.running = False
         ## Drone information, polled in the update loop with certain frequency
-        self.battery_cache = {uri: 3.0 for uri in uris}
+        self.battery_cache = {uri: 3.3 for uri in uris}
         # options are: idle, connecting, connected, disconnected, flying, hovering, landing, and error
         self.state_cache = {uri: "disconnected" for uri in uris}
         self._last_state_update_time = {uri: time.time() for uri in uris}
@@ -28,6 +28,7 @@ class CrazyflieSwarm:
         self._log_configs = {}
         ## Formation parameters
         self.formations = FormationManager(uris)
+        self.formation_positions = None
 
 
     # ---------------------------
@@ -111,7 +112,6 @@ class CrazyflieSwarm:
         except Exception as e:
             with self.lock:
                 self.scfs[uri] = None
-            print(f"[ERROR] Could not connect to {uri}: {e}")
 
     def connect_all(self):
         for uri in self.uris:
@@ -146,6 +146,10 @@ class CrazyflieSwarm:
     # ---------------------------
     def takeoff_one(self, uri, scf, height, duration):
         try:
+            if self.get_drone_battery(uri) < 3.7:
+                print(f"[WARNING] Battery too low for takeoff: {uri}")
+                self.formations.disconnect_from_formation(uri)
+                return
             hlc = scf.cf.high_level_commander
             hlc.takeoff(height, duration)
             print(f"[TAKEOFF] {uri}")
@@ -164,10 +168,11 @@ class CrazyflieSwarm:
     # If it's already landed, dont do that again
     def land_one(self, uri, scf, duration):
         try:
-            hlc = scf.cf.high_level_commander
-            hlc.land(0.0, duration)
-            self.formations.disconnect_from_formation(uri)
-            print(f"[LAND] {uri}")
+            if self.get_drone_state(uri) == "flying":
+                hlc = scf.cf.high_level_commander
+                hlc.land(0.0, duration)
+                self.formations.disconnect_from_formation(uri)
+                print(f"[LAND] {uri}")
         except Exception as e:
             print(f"[ERROR] Land failed for {uri}: {e}")
 
@@ -243,12 +248,43 @@ class CrazyflieSwarm:
     ## ---------------------------
     # FORMATION COMMANDS
     ## ---------------------------
+    def send_formation(self, positions, duration=4.0):
+        """Sends position commands to all drones to move to the specified positions over the given duration."""
+        if self.formation_positions is not None:
+            # Check for potential collisions
+            if self.formations.positions_intersect(self.formation_positions, positions, threshold=0.3):
+                transition_positions = self.formations.get_transition_positions(self.formation_positions, positions)
+            else:
+                transition_positions = [positions]
+        else:
+            transition_positions = [positions]
+        for transition_pos in transition_positions:
+            for uri, scf in self.scfs.items():
+                if scf is None or uri not in transition_pos:
+                    continue
+                x, y, z = transition_pos[uri]
+                try:
+                    hlc = scf.cf.high_level_commander
+                    hlc.go_to(x, y, z, 0.0, duration)
+                    print(f"[FORMATION] {uri} moving to ({x}, {y}, {z})")
+                except Exception as e:
+                    print(f"[ERROR] Formation command failed for {uri}: {e}")
+            # Wait for this transition to complete before moving to the next one
+            time.sleep(duration)
+        self.formation_positions = positions
+
     def flat_square(self):
         print("[FORMATION] Issuing Flat Square formation")
+        positions = self.formations.get_formation_positions("flat_square")
+        self.send_formation(positions)
     def circle(self):
         print("[FORMATION] Circle command issued")
+        positions = self.formations.get_formation_positions("circle")
+        self.send_formation(positions)
     def tilted_plane(self):
         print("[FORMATION] Tilted Plane command issued")
+        positions = self.formations.get_formation_positions("tilted_plane")
+        self.send_formation(positions)
     ## ---------------------------
     # MAIN UPDATE LOOP
     ## ---------------------------
@@ -261,15 +297,24 @@ class CrazyflieSwarm:
 
     def _update_loop(self, update_hz=50):
         # Periodic data update
+        last_connection_check = time.time()
+        connection_check_interval = 5.0  # seconds
         while self.running:
-            # Future swarm coordination logic can be added here with the formation manager
+            # For all drones, perform manager checks
             for uri in self.uris:
-                # Check for stale state info
-                current_time = time.time()
-                if current_time - self._last_state_update_time[uri] > 3 * data_update_interval:
-                    with self.lock:
-                        self.state_cache[uri] = "disconnected"
-                        self.scfs[uri] = None
-                        self.formations.disconnect_from_formation(uri)
-                        self.battery_cache[uri] = 3.0  # reset battery
+                state = self.get_drone_state(uri)
+                if state != "disconnected": # If connected, monitor connection state
+                    current_time = time.time()
+                    if current_time - self._last_state_update_time[uri] > 3 * data_update_interval:
+                        with self.lock:
+                            self.state_cache[uri] = "disconnected"
+                            self.scfs[uri] = None
+                            self.formations.disconnect_from_formation(uri)
+                            self.battery_cache[uri] = 3.0 
+                    if state == "flying" and self.battery_cache[uri] < 3.3 and self.formations.states[uri] == "in_formation":
+                        self.land_one(uri, self.scfs[uri], duration=3.0)
+                else: # Disconnected drone, attempt reconnection periodically
+                    if time.time() - last_connection_check > connection_check_interval:
+                        self.connect_one(uri)
+                        last_connection_check = time.time()
             time.sleep(0.1)  # avoid busy-waiting
