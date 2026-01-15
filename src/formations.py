@@ -2,6 +2,8 @@ from config import absolute_boundaries, drone_spacing
 import matplotlib.pyplot as plt
 import math
 
+from config import *
+
 class FormationCalculator:
     def __init__(self, spacing=drone_spacing, x_boundaries=absolute_boundaries["x"], y_boundaries=absolute_boundaries["y"], z_boundaries=absolute_boundaries["z"]):
         self.min_spacing = spacing
@@ -90,7 +92,7 @@ class FormationCalculator:
         diff = vector_subtract(closest_p1, closest_p2)
         return vector_length(diff)
 
-    def positions_intersect(self, pos_set1: dict[str, tuple[float, float, float]], pos_set2: dict[str, tuple[float, float, float]], threshold=0.1):
+    def positions_intersect(self, pos_set1: dict[str, tuple[float, float, float]], pos_set2: dict[str, tuple[float, float, float]], threshold=collision_threshold) -> bool:
         """
         Check if trajectories from start to end positions intersect.
         True if any two trajectories are closer than the threshold, False otherwise
@@ -120,10 +122,16 @@ class FormationCalculator:
                 if min_distance < threshold:
                     return True
         
-        return False        
+        return False   
 
-    def flat_square(self, drones: dict[str, str]): #{uris: states}
-        available = [uri for uri, state in drones.items() if state ==  "in_formation"]
+    def available_drones(self, drones: dict[str, bool]):
+        available = [uri for uri, connected in drones.items() if connected]
+        if not available:
+            raise ValueError("No drones available for formation.")
+        return available
+
+    def flat_square(self, drones: dict[str, bool]): #{uris: connected (T/F)}
+        available = self.available_drones(drones)
         n_drones = len(available)
         positions = dict()
         n_side = math.ceil(math.sqrt(n_drones))
@@ -142,20 +150,20 @@ class FormationCalculator:
             i += 1
         return positions
 
-    def tilted_plane(self, drones: dict[str, str], angle_x=45, angle_y=45):
+    def tilted_plane(self, drones: dict[str, bool], angle_x=default_tilt_plane_angle_x, angle_y=default_tilt_plane_angle_y):
         flat = self.flat_square(drones)
         positions = dict()
         angle_x_rad = math.radians(angle_x)
         angle_y_rad = math.radians(angle_y)
         for drone, (x, y, z) in flat.items():
             z_tilted = z + x * math.tan(angle_x_rad) + y * math.tan(angle_y_rad)
-            z_tilted = max(self.boundaries["z"][0] + 0.2, min(self.boundaries["z"][1] - 0.2, z_tilted))
+            z_tilted = max(self.boundaries["z"][0] + boundary_margins, min(self.boundaries["z"][1] - boundary_margins, z_tilted))
             positions[drone] = (x, y, z_tilted)
         return positions
     
-    def circle(self, drones: dict[str, str]):
+    def circle(self, drones: dict[str, bool]):
         radius = min((self.boundaries["x"][1] - self.boundaries["x"][0]), (self.boundaries["y"][1] - self.boundaries["y"][0])) / 2 - self.min_spacing * 2
-        available = [uri for uri, state in drones.items() if state ==  "in_formation"]
+        available = self.available_drones(drones)
         n_drones = len(available)
         positions = dict()
         angle_increment = 2 * math.pi / n_drones
@@ -169,7 +177,13 @@ class FormationCalculator:
     
     def transition_positions(self, start_positions: dict[str, tuple[float, float, float]], end_positions: dict[str, tuple[float, float, float]]):
         '''
-        We will implement lift–permute–drop strategy to avoid collisions during transitions.
+        Returns the intermediate positions for a lift-permute-drop transition
+        as a list of position dictionaries: [elevated positions, horizontal shift positions, final
+        Args:
+            start_positions (dict): Starting positions of the drones.
+            end_positions (dict): Target positions of the drones.
+        Returns:
+            list: A list of dictionaries representing intermediate positions.
         '''
         if len(start_positions) != len(end_positions):
             raise ValueError("Start and end positions must have the same number of drones.")
@@ -204,38 +218,40 @@ class FormationManager:
     def __init__(self, uris):
         self.uris = uris
         # Additional formation parameters can be initialized here
-        self.states = {uri : "disconnected" for uri in uris}
+        self.connected_to_formation = {uri : False for uri in uris}
         self.n_connected_drones = 0
 
     def connect_to_formation(self, uri):
         if uri in self.uris:
-            self.states[uri] = "in_formation"
+            self.connected_to_formation[uri] = True
             self.n_connected_drones += 1
             print(f"Drone {uri} connected to formation.")
         else:
             print(f"Drone {uri} not recognized.")
 
     def disconnect_from_formation(self, uri):
-        if uri in self.uris and self.states[uri] != "disconnected":
-            self.states[uri] = "disconnected"
+        if uri in self.uris and self.connected_to_formation[uri]:
+            self.connected_to_formation[uri] = False
             self.n_connected_drones -= 1
             print(f"Drone {uri} disconnected from formation.")
+        elif uri in self.uris:
+            print(f"Drone {uri} is already disconnected from formation.")
         else:
-            print(f"Drone {uri} not recognized or already disconnected.")
+            print(f"Drone {uri} not recognized.")
 
     def get_formation_positions(self, formation_type):
         if formation_type == "flat_square":
-            positions = FormationCalculator().flat_square(self.states)
+            positions = FormationCalculator().flat_square(self.connected_to_formation)
         elif formation_type == "tilted_plane":
-            positions = FormationCalculator().tilted_plane(self.states)
+            positions = FormationCalculator().tilted_plane(self.connected_to_formation)
         elif formation_type == "circle":
-            positions = FormationCalculator().circle(self.states)
+            positions = FormationCalculator().circle(self.connected_to_formation)
         else:
             raise ValueError("Unknown formation type.")
         return positions
     
-    def positions_intersect(self, start_positions, end_positions, threshold=0.1):
-        return FormationCalculator().positions_intersect(start_positions, end_positions, threshold)
+    def positions_intersect(self, start_positions, end_positions, threshold=collision_threshold):
+        return FormationCalculator().positions_intersect(start_positions, end_positions, collision_threshold)
 
     def get_transition_positions(self, start_positions, end_positions):
         return FormationCalculator().transition_positions(start_positions, end_positions)

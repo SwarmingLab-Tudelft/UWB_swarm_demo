@@ -30,7 +30,6 @@ Things to be implemented are:
 - Check for position convergence before taking off
 - Additions and removals to formations during flight
 - Takeoff and landing in known positions
-- Drones should only be added to the formation when flying
 
 In the firmware:
 - Land when losing connection
@@ -43,10 +42,7 @@ Testing:
 
 Code improvements:
 - Add easier radio editing
-- Move all magic numbers to config.py
-- Naming is confusing for formation manager, becasue there are 2 "states"
-- Code needs a lot of inprovement in comments, docstrings, variable names, and factorisation
+- Code needs a lot of improvement in comments, docstrings, variable names, and factorisation
 
 Known bugs:
-- When doing an emergency landing, the drone needs to be restarted, becasue the connection is "blocked"
-- Circle formation gives an error when no drones are in formation because it divides by 0
+- When doing an emergency landing, the drone needs to be restarted, becasue the connection is "blocked". Add in documentation
