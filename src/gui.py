@@ -193,6 +193,13 @@ class ControlTowerGUI:
                                        command=self.swarm.tilted_plane, width=btn_width)
         btn_tilted_plane.grid(column=2, row=rows_used+1, sticky="ew", padx=padx, pady=pady)
 
+        btn_moving_circle = tkinter.Button(self.content, text="Moving Circle", bg="purple", fg="white",
+                           command=self.swarm.moving_circle, width=btn_width)
+        btn_moving_circle.grid(column=0, row=rows_used+2, sticky="ew", padx=padx, pady=pady)
+        btn_sin_wave = tkinter.Button(self.content, text="Sine Wave", bg="purple", fg="white",
+                           command=self.swarm.sin_wave, width=btn_width)
+        btn_sin_wave.grid(column=1, row=rows_used+2, sticky="ew", padx=padx, pady=pady)
+
     ## Safe shutdown on window close
     def _configure_close_action(self):
         """Ensure safe shutdown of threads, drones, etc."""

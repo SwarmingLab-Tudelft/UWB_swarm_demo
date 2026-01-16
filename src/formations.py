@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import math
 
 from config import *
+from cflib.crazyflie.mem.trajectory_memory import Poly4D
 
 class FormationCalculator:
     def __init__(self, spacing=drone_spacing, x_boundaries=absolute_boundaries["x"], y_boundaries=absolute_boundaries["y"], z_boundaries=absolute_boundaries["z"]):
@@ -175,6 +176,122 @@ class FormationCalculator:
             positions[drone] = (x, y, z)
         return positions
     
+    def moving_circle(self, drones: dict[str, bool],  
+                      period: float = circle_rotation_period, 
+                      num_points: int = dynamic_formation_points):
+        """Generate circular trajectory segments for each drone.
+        
+        Args:
+            drones: dict {uri: connected_bool} - available drones
+            period: time for one full rotation (seconds)
+            num_points: number of waypoints around the circle
+            
+        Returns:
+            tuple: (start_positions_dict, trajectories_dict)
+                - start_positions_dict: {uri: (x, y, z)} for first waypoint
+                - trajectories_dict: {uri: waypoints} ready for sending to drones
+        """
+        # Get initial circle positions (starting points)
+        start_positions = self.circle(drones)
+        
+        # Calculate radius same way as circle()
+        radius = min((self.boundaries["x"][1] - self.boundaries["x"][0]), (self.boundaries["y"][1] - self.boundaries["y"][0])) / 2 - self.min_spacing * 2
+        
+        # Arena center
+        center = (
+            (self.boundaries["x"][0] + self.boundaries["x"][1]) / 2,
+            (self.boundaries["y"][0] + self.boundaries["y"][1]) / 2,
+            (self.boundaries["z"][0] + self.boundaries["z"][1]) / 2
+        )
+        
+        trajectories = {}
+        
+        for uri, (start_x, start_y, start_z) in start_positions.items():
+            # Calculate this drone's starting angle on the circle
+            start_angle = math.atan2(start_y - center[1], start_x - center[0])
+            
+            # Generate waypoints around the circle for this drone
+            waypoints = []
+            for k in range(num_points):
+                angle = start_angle + 2 * math.pi * k / num_points
+                x = center[0] + radius * math.cos(angle)
+                y = center[1] + radius * math.sin(angle)
+                z = start_z  # Keep each drone's altitude
+                yaw = math.atan2(center[1] - y, center[0] - x) # Yaw pointing at center
+                waypoints.append((x, y, z, yaw))  # (x, y, z, yaw pointing at center)
+            
+            
+            trajectories[uri] = waypoints
+        
+        return start_positions, trajectories
+
+    def sin_wave(self, drones: dict[str, bool], amplitude=dynamic_sine_wave_amplitude, period=dynamic_sine_wave_period, num_points=dynamic_formation_points):
+        """Generate sine wave trajectory segments for each drone.
+        
+        Args:
+            drones: dict {uri: connected_bool} - available drones
+            amplitude: height of the sine wave (meters)
+            period: time for one complete wave cycle (seconds)
+            num_points: number of waypoints in one wave cycle
+            
+        Returns:
+            tuple: (start_positions_dict, trajectories_dict)
+                - start_positions_dict: {uri: (x, y, z)} for first waypoint
+                - trajectories_dict: {uri: waypoints} ready for sending to drones
+        """
+        available = self.available_drones(drones)
+        n_drones = len(available)
+        
+        # Middle Y position (arena center)
+        y_middle = (self.boundaries["y"][0] + self.boundaries["y"][1]) / 2
+        
+        # Distribute drones evenly along X axis
+        x_spacing = (self.boundaries["x"][1] - self.boundaries["x"][0]) / (n_drones + 1)
+        x_min = self.boundaries["x"][0]
+        x_max = self.boundaries["x"][1]
+        
+        # Base Z position (middle height)
+        z_base = (self.boundaries["z"][0] + self.boundaries["z"][1]) / 2
+        
+        start_positions = dict()
+        for i, uri in enumerate(available):
+            x = self.boundaries["x"][0] + (i + 1) * x_spacing
+            # Normalize x position to [0, 2π] range to create one complete wave cycle
+            normalized_x = 2 * math.pi * (x - x_min) / (x_max - x_min)
+            z = z_base + amplitude * math.sin(normalized_x)
+            # Ensure Z stays within boundaries
+            z = max(self.boundaries["z"][0] + boundary_margins, 
+                    min(self.boundaries["z"][1] - boundary_margins, z))
+            start_positions[uri] = (x, y_middle, z)
+        
+        # Generate trajectories with sine wave motion in Z
+        trajectories = {}
+        
+        for uri, (start_x, start_y, start_z) in start_positions.items():
+            waypoints = []
+            for k in range(num_points):  # +1 to close the loop
+                # X and Y remain constant (drone's position)
+                x = start_x
+                y = start_y
+                
+                # Z follows a sine wave pattern
+                # Initial phase based on x position
+                normalized_x = 2 * math.pi * (x - x_min) / (x_max - x_min)
+                # Add phase increment for each waypoint k
+                phase_increment = 2 * math.pi * k / num_points
+                z = z_base + amplitude * math.sin(normalized_x + phase_increment)
+                
+                # Ensure Z stays within boundaries
+                z = max(self.boundaries["z"][0] + boundary_margins, 
+                        min(self.boundaries["z"][1] - boundary_margins, z))
+                
+                yaw = 0.0  # Neutral yaw since drone isn't moving horizontally
+                waypoints.append((x, y, z, yaw))
+            
+            trajectories[uri] = waypoints
+        
+        return start_positions, trajectories
+
     def transition_positions(self, start_positions: dict[str, tuple[float, float, float]], end_positions: dict[str, tuple[float, float, float]]):
         '''
         Returns the intermediate positions for a lift-permute-drop transition
@@ -249,6 +366,20 @@ class FormationManager:
         else:
             raise ValueError("Unknown formation type.")
         return positions
+    
+    def get_dynamic_formation_positions(self, formation_type):
+        '''
+        Given the formation type, return the movements to get to a starting position and the trajectories to follow.
+        Args:
+            formation_type (str): Type of dynamic formation (e.g., "moving_circle", "sin_wave")
+        '''
+        if formation_type == "moving_circle":
+            start_positions, trajectories = FormationCalculator().moving_circle(self.connected_to_formation)
+        elif formation_type == "sin_wave":
+            start_positions, trajectories = FormationCalculator().sin_wave(self.connected_to_formation)
+        else:
+            raise ValueError("Unknown dynamic formation type.")
+        return start_positions, trajectories
     
     def positions_intersect(self, start_positions, end_positions, threshold=collision_threshold):
         return FormationCalculator().positions_intersect(start_positions, end_positions, collision_threshold)

@@ -1,5 +1,6 @@
 from logging import info
 import logging
+import math
 import threading
 import time
 
@@ -9,6 +10,7 @@ from config import *
 from cflib.crazyflie import Crazyflie
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 from cflib.crazyflie.log import LogConfig
+from cflib.crazyflie.mem import MemoryElement
 
 # Suppress verbose cflib logging (link errors, packet loss messages)
 logging.getLogger('cflib').setLevel(logging.ERROR)
@@ -28,10 +30,15 @@ class CrazyflieSwarm:
         self.state_cache = {uri: "disconnected" for uri in uris}
         self._last_state_update_time = {uri: time.time() for uri in uris}
         self.current_positions = dict() # {uri: (x, y, z)}
+        self.position_cache = {uri: [] for uri in uris}
         ## Logging
         self._log_configs = {}
         ## Formation parameters
         self.formations = FormationManager(uris)
+        ## Dynamic formation control
+        self._dynamic_formation_running = {uri: False for uri in uris}
+        self._dynamic_formation_thread = None
+        self._trajectory_finished = {uri: False for uri in uris}
 
 
     # ---------------------------
@@ -80,6 +87,8 @@ class CrazyflieSwarm:
                     state = "crashed"
                 else:
                     state = "connected"  # connected but not flying/can_fly/crashed
+                # Track trajectory finished state
+                self._trajectory_finished[uri] = states['hlc_trajectory_finished']
             with self.lock:
                 self.state_cache[uri] = state
 
@@ -97,6 +106,11 @@ class CrazyflieSwarm:
             if x is None or y is None or z is None:
                 return
             self.current_positions[uri] = (x, y, z)
+            # Store position in cache, keeping only last 10 positions
+            with self.lock:
+                self.position_cache[uri].append((x, y, z))
+                if len(self.position_cache[uri]) > position_cache_size:
+                    self.position_cache[uri].pop(0)
 
         def _low_freq_callback(ts, data, logconf):
             _supervisor_cb(data)
@@ -162,6 +176,26 @@ class CrazyflieSwarm:
         return self.battery_cache.get(uri, default_battery_voltage)
 
     # ---------------------------
+    # SAFETY CHECKS AND COMMANDS
+    # ---------------------------
+    def position_has_converged(self, uri):
+        """Check if the drone's position has converged based on recent position history."""
+        with self.lock:
+            positions = self.position_cache.get(uri, [])
+            if len(positions) < position_cache_size:
+                return False  # Not enough data to determine convergence
+            # Calculate the maximum distance between any two recorded positions
+            max_distance = 0.0
+            for i in range(len(positions)):
+                for j in range(i + 1, len(positions)):
+                    dx = positions[i][0] - positions[j][0]
+                    dy = positions[i][1] - positions[j][1]
+                    dz = positions[i][2] - positions[j][2]
+                    distance = (dx**2 + dy**2 + dz**2)**0.5
+                    if distance > position_convergence_distance:
+                        return False
+            return True
+    # ---------------------------
     # TAKE OFF
     # ---------------------------
     def takeoff_one(self, uri, scf, height, duration):
@@ -172,6 +206,9 @@ class CrazyflieSwarm:
             if self.get_drone_state(uri) == "flying":
                 print(f"[INFO] Drone already flying: {uri}")
                 return
+            if not self.position_has_converged(uri):
+                print(f"[INFO] Drone position has not converged: {uri}")
+                return
             hlc = scf.cf.high_level_commander
             hlc.takeoff(height, duration)
             self.formations.connect_to_formation(uri)
@@ -180,6 +217,7 @@ class CrazyflieSwarm:
             print(f"[ERROR] Takeoff failed for {uri}: {e}")
 
     def takeoff(self, height=takeoff_height, duration=takeoff_duration):
+        self._stop_dynamic_formation()
         for uri, scf in self.scfs.items():
             if scf is None:
                 continue
@@ -190,6 +228,7 @@ class CrazyflieSwarm:
     # ---------------------------
     def land_one(self, uri, scf, duration):
         try:
+            self._dynamic_formation_running[uri] = False
             if self.get_drone_state(uri) == "flying":
                 hlc = scf.cf.high_level_commander
                 hlc.land(0.0, duration)
@@ -199,6 +238,7 @@ class CrazyflieSwarm:
             print(f"[ERROR] Land failed for {uri}: {e}")
 
     def land(self, duration=landing_duration):
+        self._stop_dynamic_formation()
         for uri, scf in self.scfs.items():
             if scf is None:
                 continue
@@ -217,6 +257,7 @@ class CrazyflieSwarm:
             print(f"[ERROR] Emergency stop failed for {uri}: {e}")
 
     def emergency_land(self):
+        self._stop_dynamic_formation()
         for uri, scf in self.scfs.items():
             threading.Thread(target=self.emergency_one, args=(uri, scf)).start()
 
@@ -276,12 +317,21 @@ class CrazyflieSwarm:
     ## ---------------------------
     # FORMATION COMMANDS
     ## ---------------------------
+    def _stop_dynamic_formation(self):
+        """Stop any running dynamic formation thread."""
+        self._dynamic_formation_running = {uri: False for uri in self.uris}
+        if self._dynamic_formation_thread is not None:
+            self._dynamic_formation_thread.join(timeout=2.0)
+    
     def send_formation(self, target_formation, duration=formation_transition_duration):
         """Sends position commands to all drones to move to the specified positions over the given duration."""
+        # Stop any running dynamic formation
+        self._stop_dynamic_formation()
+        
         if self.current_positions is not None:
             # Check for potential collisions
             if self.formations.positions_intersect(self.current_positions, target_formation, threshold=collision_threshold):
-                transition_positions = self.formations.get_transition_positions(self.current_positions, target_formation, threshold=collision_threshold)
+                transition_positions = self.formations.get_transition_positions(self.current_positions, target_formation)
             else:
                 transition_positions = [target_formation]
         else:
@@ -300,6 +350,36 @@ class CrazyflieSwarm:
             # Wait for this transition to complete before moving to the next one
             time.sleep(duration)
 
+    def send_dynamic_formation(self, trajectories: dict[str, list], waypoint_dt): # dict of {uri: list[waypoints]}
+        """Uploads and loops trajectory for each drone until interrupted.
+        
+        Args:
+            trajectories: dict of {uri: list[waypoints]}
+            waypoint: [x, y, z, yaw]
+        """
+        self._dynamic_formation_running = {uri: True for uri in self.uris}
+        def run_sequence(uri, cf, sequence):
+            i = 0
+            while self._dynamic_formation_running[uri] and self.running:
+                position = sequence[i]
+                cf.commander.send_position_setpoint(position[0],
+                                                    position[1],
+                                                    position[2],
+                                                    position[3])
+                i = (i + 1) % len(sequence)
+                time.sleep(waypoint_dt)
+            cf.commander.send_stop_setpoint()
+            # Hand control over to the high level commander to avoid timeout and locking of the Crazyflie
+            cf.commander.send_notify_setpoint_stop()
+        for uri, scf in self.scfs.items():
+            if scf is None or uri not in trajectories:
+                continue
+            sequence = trajectories[uri]
+            cf = scf.cf
+            self._dynamic_formation_thread = threading.Thread(target=run_sequence, args=(uri, cf, sequence))
+            self._dynamic_formation_thread.start()
+
+    # Formation types
     def flat_square(self):
         print("[FORMATION] Issuing Flat Square formation")
         new_formation = self.formations.get_formation_positions("flat_square")
@@ -312,6 +392,17 @@ class CrazyflieSwarm:
         print("[FORMATION] Tilted Plane command issued")
         new_formation = self.formations.get_formation_positions("tilted_plane")
         self.send_formation(new_formation)
+    def moving_circle(self):
+        print("[FORMATION] Moving Circle command issued")
+        initial_positions, trajectories = self.formations.get_dynamic_formation_positions("moving_circle")
+        self.send_formation(initial_positions)
+        waypoint_dt = circle_rotation_period / dynamic_formation_points
+        self.send_dynamic_formation(trajectories, waypoint_dt)
+    def sin_wave(self):
+        print("[FORMATION] Sine Wave command issued")
+        initial_formation, trajectories = self.formations.get_dynamic_formation_positions("sin_wave")
+        self.send_formation(initial_formation)
+        waypoint_dt = sin_wave_period / dynamic_formation_points - dynamic_minus_dt
     ## ---------------------------
     # MAIN UPDATE LOOP
     ## ---------------------------
@@ -338,7 +429,7 @@ class CrazyflieSwarm:
                             self.scfs[uri] = None
                             self.formations.disconnect_from_formation(uri)
                             self.battery_cache[uri] = default_battery_voltage
-                    if state == "flying" and self.battery_cache[uri] < low_battery_in_flight and self.formations.states[uri] == "in_formation":
+                    if state == "flying" and self.battery_cache[uri] < low_battery_in_flight and self.formations.connected_to_formation[uri]:
                         print(f"[WARNING] Low battery detected during flight for {uri}. Initiating landing.")
                         self.land_one(uri, self.scfs[uri], duration=landing_duration)
                 else: # Disconnected drone, attempt reconnection periodically
