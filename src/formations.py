@@ -97,18 +97,29 @@ class FormationCalculator:
         """
         Check if trajectories from start to end positions intersect.
         True if any two trajectories are closer than the threshold, False otherwise
+        
+        Tolerates different numbers of drones:
+        - If a drone appears in pos_set2 but not pos_set1, prints warning and returns False
+        - If a drone disappears (in pos_set1 but not pos_set2), ignores it
         """
-        if len(pos_set1) != len(pos_set2):
-            raise ValueError("Start and end position sets must have the same number of drones.")
+        # Check for new drones in target position
+        new_drones = set(pos_set2.keys()) - set(pos_set1.keys())
+        if new_drones:
+            print(f"WARNING: Missing estimations for drones. New drones detected: {new_drones}")
+            return False
         
-        drones = list(pos_set1.keys())
-        n_drones = len(drones)
+        # Only check drones that exist in both sets
+        common_drones = [uri for uri in pos_set1.keys() if uri in pos_set2]
         
-        # Check all pairs of drone trajectories
+        if not common_drones:
+            return False
+        
+        # Check all pairs of common drone trajectories
+        n_drones = len(common_drones)
         for i in range(n_drones):
             for j in range(i + 1, n_drones):
-                drone_i = drones[i]
-                drone_j = drones[j]
+                drone_i = common_drones[i]
+                drone_j = common_drones[j]
                 
                 # Get start and end points for each drone
                 p1_start = pos_set1[drone_i]
@@ -177,14 +188,12 @@ class FormationCalculator:
         return positions
     
     def moving_circle(self, drones: dict[str, bool],  
-                      period: float = circle_rotation_period, 
-                      num_points: int = dynamic_formation_points):
+                      period: float = circle_rotation_period):
         """Generate circular trajectory segments for each drone.
         
         Args:
             drones: dict {uri: connected_bool} - available drones
             period: time for one full rotation (seconds)
-            num_points: number of waypoints around the circle
             
         Returns:
             tuple: (start_positions_dict, trajectories_dict)
@@ -205,6 +214,7 @@ class FormationCalculator:
         )
         
         trajectories = {}
+        num_points = int(period / dynamic_waypoint_dt)
         
         for uri, (start_x, start_y, start_z) in start_positions.items():
             # Calculate this drone's starting angle on the circle
@@ -225,14 +235,13 @@ class FormationCalculator:
         
         return start_positions, trajectories
 
-    def sin_wave(self, drones: dict[str, bool], amplitude=dynamic_sine_wave_amplitude, period=dynamic_sine_wave_period, num_points=dynamic_formation_points):
+    def sin_wave(self, drones: dict[str, bool], amplitude=dynamic_sine_wave_amplitude, period=dynamic_sine_wave_period):
         """Generate sine wave trajectory segments for each drone.
         
         Args:
             drones: dict {uri: connected_bool} - available drones
             amplitude: height of the sine wave (meters)
             period: time for one complete wave cycle (seconds)
-            num_points: number of waypoints in one wave cycle
             
         Returns:
             tuple: (start_positions_dict, trajectories_dict)
@@ -252,7 +261,6 @@ class FormationCalculator:
         
         # Base Z position (middle height)
         z_base = (self.boundaries["z"][0] + self.boundaries["z"][1]) / 2
-        
         start_positions = dict()
         for i, uri in enumerate(available):
             x = self.boundaries["x"][0] + (i + 1) * x_spacing
@@ -263,10 +271,9 @@ class FormationCalculator:
             z = max(self.boundaries["z"][0] + boundary_margins, 
                     min(self.boundaries["z"][1] - boundary_margins, z))
             start_positions[uri] = (x, y_middle, z)
-        
         # Generate trajectories with sine wave motion in Z
         trajectories = {}
-        
+        num_points = int(period / dynamic_waypoint_dt)
         for uri, (start_x, start_y, start_z) in start_positions.items():
             waypoints = []
             for k in range(num_points):  # +1 to close the loop
@@ -337,6 +344,7 @@ class FormationManager:
         # Additional formation parameters can be initialized here
         self.connected_to_formation = {uri : False for uri in uris}
         self.n_connected_drones = 0
+        self.current_formation = None
 
     def connect_to_formation(self, uri):
         if uri in self.uris:
@@ -367,16 +375,19 @@ class FormationManager:
             raise ValueError("Unknown formation type.")
         return positions
     
-    def get_dynamic_formation_positions(self, formation_type):
+    def get_dynamic_formation_positions(self, formation_type, period=10.0):
         '''
-        Given the formation type, return the movements to get to a starting position and the trajectories to follow.
+        Given the formation type and a period, return the movements to get to a starting position and the trajectories to follow.
+        The starting positions are the first waypoints of the trajectories.
+        The trajectories are always cyclic.
         Args:
             formation_type (str): Type of dynamic formation (e.g., "moving_circle", "sin_wave")
+            period (float): Duration of one full cycle of the dynamic formation
         '''
         if formation_type == "moving_circle":
-            start_positions, trajectories = FormationCalculator().moving_circle(self.connected_to_formation)
+            start_positions, trajectories = FormationCalculator().moving_circle(self.connected_to_formation, period=period)
         elif formation_type == "sin_wave":
-            start_positions, trajectories = FormationCalculator().sin_wave(self.connected_to_formation)
+            start_positions, trajectories = FormationCalculator().sin_wave(self.connected_to_formation, period=period)
         else:
             raise ValueError("Unknown dynamic formation type.")
         return start_positions, trajectories

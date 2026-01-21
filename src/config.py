@@ -31,8 +31,8 @@ circle_rotation_period = 12.0 # seconds
 sin_wave_period = 12.0 # seconds
 dynamic_sine_wave_amplitude = (absolute_boundaries['z'][1] - absolute_boundaries['z'][0] - 2 * boundary_margins) / 3 # meters
 dynamic_sine_wave_period = 8.0  # seconds
-dynamic_formation_points = 30  # number of waypoints in dynamic formation trajectories
-dynamic_minus_dt = 0.15  # seconds to subtract from waypoint dt to ensure smoothness
+dynamic_waypoint_dt = 0.2  # seconds between waypoints in dynamic formation trajectories
+dynamic_minus_dt = 0.0  # seconds to subtract from waypoint dt to ensure smoothness
 
 # Communication variables
 high_frequency_update_interval = 0.25 # seconds

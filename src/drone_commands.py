@@ -38,7 +38,7 @@ class CrazyflieSwarm:
         ## Dynamic formation control
         self._dynamic_formation_running = {uri: False for uri in uris}
         self._dynamic_formation_thread = None
-        self._trajectory_finished = {uri: False for uri in uris}
+        self.current_formation = None
 
 
     # ---------------------------
@@ -87,8 +87,6 @@ class CrazyflieSwarm:
                     state = "crashed"
                 else:
                     state = "connected"  # connected but not flying/can_fly/crashed
-                # Track trajectory finished state
-                self._trajectory_finished[uri] = states['hlc_trajectory_finished']
             with self.lock:
                 self.state_cache[uri] = state
 
@@ -211,8 +209,8 @@ class CrazyflieSwarm:
                 return
             hlc = scf.cf.high_level_commander
             hlc.takeoff(height, duration)
-            self.formations.connect_to_formation(uri)
             print(f"[TAKEOFF] {uri}")
+            self.connect_to_formation(uri)
         except Exception as e:
             print(f"[ERROR] Takeoff failed for {uri}: {e}")
 
@@ -232,7 +230,7 @@ class CrazyflieSwarm:
             if self.get_drone_state(uri) == "flying":
                 hlc = scf.cf.high_level_commander
                 hlc.land(0.0, duration)
-                self.formations.disconnect_from_formation(uri)
+                self.disconnect_from_formation(uri)
                 print(f"[LAND] {uri}")
         except Exception as e:
             print(f"[ERROR] Land failed for {uri}: {e}")
@@ -328,7 +326,7 @@ class CrazyflieSwarm:
         # Stop any running dynamic formation
         self._stop_dynamic_formation()
         
-        if self.current_positions is not None:
+        if self.current_positions is not None and self.state_cache == "flying":
             # Check for potential collisions
             if self.formations.positions_intersect(self.current_positions, target_formation, threshold=collision_threshold):
                 transition_positions = self.formations.get_transition_positions(self.current_positions, target_formation)
@@ -351,58 +349,106 @@ class CrazyflieSwarm:
             time.sleep(duration)
 
     def send_dynamic_formation(self, trajectories: dict[str, list], waypoint_dt): # dict of {uri: list[waypoints]}
-        """Uploads and loops trajectory for each drone until interrupted.
+        """Uploads and loops trajectory for each drone until interrupted. It assumes the drones are already in the starting positions.
+        Uses a shared clock to ensure all drones are synchronized.
         
         Args:
-            trajectories: dict of {uri: list[waypoints]}
-            waypoint: [x, y, z, yaw]
+            trajectories: dict of {uri: list[waypoints]} where each waypoint is [x, y, z, yaw]
+            waypoint_dt: time interval between waypoints in seconds
         """
         self._dynamic_formation_running = {uri: True for uri in self.uris}
-        def run_sequence(uri, cf, sequence):
+        
+        # Shared clock
+        start_time = time.time()
+        
+        def run_sequence(uri, cf, sequence, start_time):
             i = 0
             while self._dynamic_formation_running[uri] and self.running:
+                # Calculate target time for this waypoint based on shared clock
+                target_time = start_time + (i + 1) * waypoint_dt
+                
+                # Send position command
                 position = sequence[i]
                 cf.commander.send_position_setpoint(position[0],
                                                     position[1],
                                                     position[2],
                                                     position[3])
                 i = (i + 1) % len(sequence)
-                time.sleep(waypoint_dt)
+                
+                # Sleep until target time to maintain synchronization
+                sleep_time = target_time - time.time()
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                # If we're behind schedule (sleep_time <= 0), continue immediately
+                
             cf.commander.send_stop_setpoint()
             # Hand control over to the high level commander to avoid timeout and locking of the Crazyflie
             cf.commander.send_notify_setpoint_stop()
+        
         for uri, scf in self.scfs.items():
             if scf is None or uri not in trajectories:
                 continue
             sequence = trajectories[uri]
             cf = scf.cf
-            self._dynamic_formation_thread = threading.Thread(target=run_sequence, args=(uri, cf, sequence))
+            self._dynamic_formation_thread = threading.Thread(target=run_sequence, args=(uri, cf, sequence, start_time))
             self._dynamic_formation_thread.start()
 
-    # Formation types
+    # Send specific formations
+    def recalculate_current_formation(self):
+        formation_methods = {
+            "flat_square": self.flat_square,
+            "circle": self.circle,
+            "tilted_plane": self.tilted_plane,
+            "moving_circle": self.moving_circle,
+            "sin_wave": self.sin_wave
+        }
+        if self.current_formation in formation_methods:
+            formation_methods[self.current_formation]()
+        else:
+            print(f"[ERROR] Unknown formation name: {self.current_formation}")
+
+    def connect_to_formation(self, uri):
+        self.formations.connect_to_formation(uri)
+        self.recalculate_current_formation()
+
+    def disconnect_from_formation(self, uri):
+        self.formations.disconnect_from_formation(uri)
+        if self.formations.n_connected_drones > 0:
+            self.recalculate_current_formation()
+
+    # ---------------------------
+    # FORMATION TYPES
+    # ---------------------------
+    # Static fomrations
     def flat_square(self):
         print("[FORMATION] Issuing Flat Square formation")
+        self.current_formation = "flat_square"
         new_formation = self.formations.get_formation_positions("flat_square")
         self.send_formation(new_formation)
     def circle(self):
         print("[FORMATION] Circle command issued")
+        self.current_formation = "circle"
         new_formation = self.formations.get_formation_positions("circle")
         self.send_formation(new_formation)
     def tilted_plane(self):
         print("[FORMATION] Tilted Plane command issued")
+        self.current_formation = "tilted_plane"
         new_formation = self.formations.get_formation_positions("tilted_plane")
         self.send_formation(new_formation)
+    # Dynamic formations
     def moving_circle(self):
         print("[FORMATION] Moving Circle command issued")
-        initial_positions, trajectories = self.formations.get_dynamic_formation_positions("moving_circle")
+        self.current_formation = "moving_circle"
+        initial_positions, trajectories = self.formations.get_dynamic_formation_positions("moving_circle", circle_rotation_period)
         self.send_formation(initial_positions)
-        waypoint_dt = circle_rotation_period / dynamic_formation_points
-        self.send_dynamic_formation(trajectories, waypoint_dt)
+        self.send_dynamic_formation(trajectories, dynamic_waypoint_dt)
     def sin_wave(self):
         print("[FORMATION] Sine Wave command issued")
-        initial_formation, trajectories = self.formations.get_dynamic_formation_positions("sin_wave")
+        self.current_formation = "sin_wave"
+        initial_formation, trajectories = self.formations.get_dynamic_formation_positions("sin_wave", sin_wave_period)
         self.send_formation(initial_formation)
-        waypoint_dt = sin_wave_period / dynamic_formation_points - dynamic_minus_dt
+        print(trajectories)
+        self.send_dynamic_formation(trajectories, dynamic_waypoint_dt)
     ## ---------------------------
     # MAIN UPDATE LOOP
     ## ---------------------------
