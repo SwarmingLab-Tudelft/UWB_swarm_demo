@@ -403,9 +403,10 @@ class CrazyflieSwarm:
             "sin_wave": self.sin_wave
         }
         if self.current_formation in formation_methods:
+            print(f"[FORMATION] Recalculating formation: {self.current_formation}")
             formation_methods[self.current_formation]()
         else:
-            print(f"[ERROR] Unknown formation name: {self.current_formation}")
+            return
 
     def connect_to_formation(self, uri):
         self.formations.connect_to_formation(uri)
@@ -447,7 +448,6 @@ class CrazyflieSwarm:
         self.current_formation = "sin_wave"
         initial_formation, trajectories = self.formations.get_dynamic_formation_positions("sin_wave", sin_wave_period)
         self.send_formation(initial_formation)
-        print(trajectories)
         self.send_dynamic_formation(trajectories, dynamic_waypoint_dt)
     ## ---------------------------
     # MAIN UPDATE LOOP

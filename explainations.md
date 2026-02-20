@@ -47,3 +47,6 @@ Code improvements:
 Known bugs:
 - Reconnecition regulary fails when disconneced and trying to reconnect
 - When doing an emergency landing, the drone needs to be restarted, becasue the connection is "blocked". Add in documentation
+- When started for the first time, it gets stuck somewhere and does not launch the GUI
+- When landing, already landed drones try to reland
+- After a bit of flying, the drone wiggles

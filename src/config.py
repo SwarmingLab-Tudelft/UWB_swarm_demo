@@ -1,8 +1,7 @@
 # Radio URIs for the drones
 uris = ['radio://0/100/2M/247E000001', 
-        'radio://0/100/2M/247E000002', 
-        'radio://0/100/2M/247E000003', 
-        'radio://0/100/2M/247E000004']
+        'radio://0/100/2M/247E000002',
+        'radio://0/100/2M/247E000003']
 
 # Boundary variables
 absolute_boundaries = {
@@ -43,8 +42,8 @@ position_cache_size = int(position_convergence_time / high_frequency_update_inte
 
 # Battery variables
 default_battery_voltage = 3.0 # volts
-low_battery_in_flight = 3.1 # volts
-low_battery_on_ground = 3.6 # volts
+low_battery_in_flight = 3.0 # volts 3.1
+low_battery_on_ground = 3.0 # volts 3.6
 
 # Closing variables
 closing_threads_timeout = 4.0 # seconds
